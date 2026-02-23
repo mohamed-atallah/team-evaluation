@@ -1,0 +1,70 @@
+{
+  "auth": {
+    "invalidCredentials": "Invalid email or password",
+    "userNotFound": "User not found",
+    "emailExists": "Email already exists",
+    "invalidToken": "Invalid or expired token",
+    "unauthorized": "Unauthorized access",
+    "forbidden": "Access forbidden",
+    "loginSuccess": "Login successful",
+    "logoutSuccess": "Logged out successfully",
+    "registrationSuccess": "Registration successful",
+    "passwordTooShort": "Password must be at least 8 characters"
+  },
+  "validation": {
+    "requiredField": "This field is required",
+    "invalidEmail": "Invalid email format",
+    "invalidDate": "Invalid date format",
+    "invalidScore": "Score must be between 1 and 5",
+    "missingFields": "Missing required fields"
+  },
+  "evaluation": {
+    "notFound": "Evaluation not found",
+    "alreadyExists": "Evaluation already exists for this period",
+    "allCriteriaRequired": "All criteria must be scored before submitting",
+    "submitSuccess": "Evaluation submitted successfully",
+    "saveSuccess": "Evaluation saved successfully",
+    "invalidStatus": "Invalid evaluation status",
+    "cannotModify": "Cannot modify a submitted evaluation"
+  },
+  "period": {
+    "notFound": "Evaluation period not found",
+    "noActive": "No active evaluation period",
+    "dateConflict": "Date conflict with existing period",
+    "createSuccess": "Evaluation period created successfully",
+    "updateSuccess": "Evaluation period updated successfully"
+  },
+  "user": {
+    "notFound": "User not found",
+    "createSuccess": "User created successfully",
+    "updateSuccess": "User updated successfully",
+    "deleteSuccess": "User deleted successfully",
+    "cannotDelete": "Cannot delete this user"
+  },
+  "team": {
+    "notFound": "Team not found",
+    "createSuccess": "Team created successfully",
+    "updateSuccess": "Team updated successfully",
+    "deleteSuccess": "Team deleted successfully",
+    "memberAdded": "Member added to team successfully",
+    "memberRemoved": "Member removed from team successfully"
+  },
+  "department": {
+    "notFound": "Department not found",
+    "createSuccess": "Department created successfully",
+    "updateSuccess": "Department updated successfully",
+    "deleteSuccess": "Department deleted successfully",
+    "hasTeams": "Cannot delete department with existing teams"
+  },
+  "criteria": {
+    "notFound": "Criteria not found",
+    "createSuccess": "Criteria created successfully",
+    "updateSuccess": "Criteria updated successfully"
+  },
+  "errors": {
+    "serverError": "Internal server error",
+    "notFound": "Resource not found",
+    "badRequest": "Bad request",
+    "conflict": "Conflict with existing data"
+  }
+}

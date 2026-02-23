@@ -1,0 +1,70 @@
+{
+  "auth": {
+    "invalidCredentials": "البريد الإلكتروني أو كلمة المرور غير صحيحة",
+    "userNotFound": "المستخدم غير موجود",
+    "emailExists": "البريد الإلكتروني موجود بالفعل",
+    "invalidToken": "رمز غير صالح أو منتهي الصلاحية",
+    "unauthorized": "غير مصرح بالوصول",
+    "forbidden": "الوصول محظور",
+    "loginSuccess": "تم تسجيل الدخول بنجاح",
+    "logoutSuccess": "تم تسجيل الخروج بنجاح",
+    "registrationSuccess": "تم التسجيل بنجاح",
+    "passwordTooShort": "يجب أن تكون كلمة المرور 8 أحرف على الأقل"
+  },
+  "validation": {
+    "requiredField": "هذا الحقل مطلوب",
+    "invalidEmail": "صيغة البريد الإلكتروني غير صالحة",
+    "invalidDate": "صيغة التاريخ غير صالحة",
+    "invalidScore": "يجب أن تكون الدرجة بين 1 و 5",
+    "missingFields": "حقول مطلوبة مفقودة"
+  },
+  "evaluation": {
+    "notFound": "التقييم غير موجود",
+    "alreadyExists": "التقييم موجود بالفعل لهذه الفترة",
+    "allCriteriaRequired": "يجب تقييم جميع المعايير قبل الإرسال",
+    "submitSuccess": "تم إرسال التقييم بنجاح",
+    "saveSuccess": "تم حفظ التقييم بنجاح",
+    "invalidStatus": "حالة التقييم غير صالحة",
+    "cannotModify": "لا يمكن تعديل تقييم مُرسل"
+  },
+  "period": {
+    "notFound": "فترة التقييم غير موجودة",
+    "noActive": "لا توجد فترة تقييم نشطة",
+    "dateConflict": "تعارض في التاريخ مع فترة موجودة",
+    "createSuccess": "تم إنشاء فترة التقييم بنجاح",
+    "updateSuccess": "تم تحديث فترة التقييم بنجاح"
+  },
+  "user": {
+    "notFound": "المستخدم غير موجود",
+    "createSuccess": "تم إنشاء المستخدم بنجاح",
+    "updateSuccess": "تم تحديث المستخدم بنجاح",
+    "deleteSuccess": "تم حذف المستخدم بنجاح",
+    "cannotDelete": "لا يمكن حذف هذا المستخدم"
+  },
+  "team": {
+    "notFound": "الفريق غير موجود",
+    "createSuccess": "تم إنشاء الفريق بنجاح",
+    "updateSuccess": "تم تحديث الفريق بنجاح",
+    "deleteSuccess": "تم حذف الفريق بنجاح",
+    "memberAdded": "تمت إضافة العضو إلى الفريق بنجاح",
+    "memberRemoved": "تمت إزالة العضو من الفريق بنجاح"
+  },
+  "department": {
+    "notFound": "القسم غير موجود",
+    "createSuccess": "تم إنشاء القسم بنجاح",
+    "updateSuccess": "تم تحديث القسم بنجاح",
+    "deleteSuccess": "تم حذف القسم بنجاح",
+    "hasTeams": "لا يمكن حذف قسم يحتوي على فرق"
+  },
+  "criteria": {
+    "notFound": "المعيار غير موجود",
+    "createSuccess": "تم إنشاء المعيار بنجاح",
+    "updateSuccess": "تم تحديث المعيار بنجاح"
+  },
+  "errors": {
+    "serverError": "خطأ في الخادم",
+    "notFound": "المورد غير موجود",
+    "badRequest": "طلب غير صالح",
+    "conflict": "تعارض مع بيانات موجودة"
+  }
+}

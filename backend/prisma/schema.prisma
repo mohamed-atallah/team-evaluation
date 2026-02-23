@@ -1,0 +1,338 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Role {
+  id          String             @id @default(uuid())
+  name        String             @unique
+  description String?
+  systemRole  UserRole           @default(junior)
+  createdAt   DateTime           @default(now()) @map("created_at")
+  updatedAt   DateTime           @updatedAt @map("updated_at")
+  levels      Level[]
+  permissions RolePermission[]
+  userRoles   UserRoleRelation[]
+  users       User[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String           @id @default(uuid())
+  name        String           @unique
+  description String?
+  category    String?
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+  roles       RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String     @map("role_id")
+  permissionId String     @map("permission_id")
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model JobTitle {
+  id             String               @id @default(uuid())
+  name           String               @unique
+  description    String?
+  departmentId   String?              @map("department_id")
+  isActive       Boolean              @default(true) @map("is_active")
+  createdAt      DateTime             @default(now()) @map("created_at")
+  updatedAt      DateTime             @updatedAt @map("updated_at")
+  behaviorWeight Decimal              @default(0.40) @map("behavior_weight") @db.Decimal(3, 2)
+  howWeight      Decimal              @default(0.60) @map("how_weight") @db.Decimal(3, 2)
+  criteria       JobTitleCriteria[]
+  department     Department?          @relation(fields: [departmentId], references: [id])
+  users          User[]
+
+  @@map("job_titles")
+}
+
+model JobTitleCriteria {
+  jobTitleId   String             @map("job_title_id")
+  criteriaId   String             @map("criteria_id")
+  displayOrder Int                @default(0) @map("display_order")
+  weight       Decimal?           @db.Decimal(3, 2)
+  createdAt    DateTime           @default(now()) @map("created_at")
+  updatedAt    DateTime           @updatedAt @map("updated_at")
+  criteria     EvaluationCriteria @relation(fields: [criteriaId], references: [id], onDelete: Cascade)
+  jobTitle     JobTitle           @relation(fields: [jobTitleId], references: [id], onDelete: Cascade)
+
+  @@id([jobTitleId, criteriaId])
+  @@map("job_title_criteria")
+}
+
+model UserRoleRelation {
+  userId String @map("user_id")
+  roleId String @map("role_id")
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model Level {
+  id           String   @id @default(uuid())
+  name         String
+  description  String?
+  roleId       String   @map("role_id")
+  displayOrder Int      @default(0) @map("display_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  role         Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  users        User[]
+
+  @@unique([roleId, name])
+  @@map("levels")
+}
+
+model Department {
+  id          String    @id @default(uuid())
+  name        String    @unique
+  description String?
+  managerId   String?   @map("manager_id")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  manager     User?     @relation("DepartmentManager", fields: [managerId], references: [id])
+  jobTitles   JobTitle[]
+  teams       Team[]
+  users       User[]
+
+  @@map("departments")
+}
+
+model Team {
+  id           String     @id @default(uuid())
+  name         String
+  departmentId String     @map("department_id")
+  managerId    String?    @map("manager_id")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+  department   Department @relation(fields: [departmentId], references: [id])
+  manager      User?      @relation("TeamManager", fields: [managerId], references: [id])
+  members      User[]     @relation("TeamMembers")
+
+  @@map("teams")
+}
+
+model User {
+  id                   String                @id @default(uuid())
+  email                String                @unique
+  passwordHash         String                @map("password_hash")
+  firstName            String                @map("first_name")
+  lastName             String                @map("last_name")
+  role                 UserRole              @default(junior)
+  roleId               String?               @map("role_id")
+  jobTitleId           String?               @map("job_title_id")
+  levelId              String?               @map("level_id")
+  level                EmployeeLevel?
+  departmentId         String?               @map("department_id")
+  teamId               String?               @map("team_id")
+  managerId            String?               @map("manager_id")
+  seniorId             String?               @map("senior_id")
+  yearsExperience      Decimal?              @map("years_experience") @db.Decimal(4, 1)
+  avatarUrl            String?               @map("avatar_url")
+  isActive             Boolean               @default(true) @map("is_active")
+  createdAt            DateTime              @default(now()) @map("created_at")
+  updatedAt            DateTime              @updatedAt @map("updated_at")
+  managedDepartments   Department[]          @relation("DepartmentManager")
+  auditLogs            EvaluationAudit[]
+  createdPeriods       EvaluationPeriod[]
+  evaluationsReceived  Evaluation[]          @relation("Evaluatee")
+  evaluationsGiven     Evaluation[]          @relation("Evaluator")
+  actionLogs           PermissionAuditLog[]
+  refreshTokens        RefreshToken[]
+  managedTeams         Team[]                @relation("TeamManager")
+  userRoles            UserRoleRelation[]
+  department           Department?           @relation(fields: [departmentId], references: [id])
+  jobTitle             JobTitle?             @relation(fields: [jobTitleId], references: [id])
+  dynamicLevel         Level?                @relation(fields: [levelId], references: [id])
+  manager              User?                 @relation("ManagerSubordinates", fields: [managerId], references: [id])
+  subordinates         User[]                @relation("ManagerSubordinates")
+  dynamicRole          Role?                 @relation(fields: [roleId], references: [id])
+  senior               User?                 @relation("SeniorJuniors", fields: [seniorId], references: [id])
+  juniors              User[]                @relation("SeniorJuniors")
+  team                 Team?                 @relation("TeamMembers", fields: [teamId], references: [id])
+
+  @@map("users")
+}
+
+model EvaluationAudit {
+  id           String     @id @default(uuid())
+  evaluationId String     @map("evaluation_id")
+  userId       String     @map("user_id")
+  action       String
+  changes      Json?
+  notes        String?
+  createdAt    DateTime   @default(now()) @map("created_at")
+  evaluation   Evaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+  user         User       @relation(fields: [userId], references: [id])
+
+  @@index([evaluationId])
+  @@map("evaluation_audit_logs")
+}
+
+model PermissionAuditLog {
+  id            String   @id @default(uuid())
+  actorId       String   @map("actor_id")
+  action        String
+  entityType    String
+  entityId      String?
+  previousValue Json?    @map("previous_value")
+  newValue      Json?    @map("new_value")
+  createdAt     DateTime @default(now()) @map("created_at")
+  actor         User     @relation(fields: [actorId], references: [id])
+
+  @@map("permission_audit_logs")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String   @map("user_id")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}
+
+model EvaluationCriteria {
+  id                   String             @id @default(uuid())
+  name                 String             @unique
+  description          String
+  expectations         String
+  behavioralIndicators String             @map("behavioral_indicators")
+  scoringGuide         Json               @map("scoring_guide")
+  weight               Decimal            @default(1.00) @db.Decimal(3, 2)
+  displayOrder         Int                @map("display_order")
+  isActive             Boolean            @default(true) @map("is_active")
+  createdAt            DateTime           @default(now()) @map("created_at")
+  updatedAt            DateTime           @updatedAt @map("updated_at")
+  scores               EvaluationScore[]
+  jobTitles            JobTitleCriteria[]
+
+  @@map("evaluation_criteria")
+}
+
+model EvaluationPeriod {
+  id          String       @id @default(uuid())
+  name        String
+  startDate   DateTime     @map("start_date")
+  endDate     DateTime     @map("end_date")
+  status      PeriodStatus @default(upcoming)
+  createdBy   String       @map("created_by")
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+  creator     User         @relation(fields: [createdBy], references: [id])
+  evaluations Evaluation[]
+
+  @@map("evaluation_periods")
+}
+
+model Evaluation {
+  id                       String                       @id @default(uuid())
+  evaluateeId              String                       @map("evaluatee_id")
+  evaluatorId              String?                      @map("evaluator_id")
+  seniorId                 String?                      @map("senior_id")
+  evaluationPeriodId       String                       @map("evaluation_period_id")
+  status                   EvaluationStatus             @default(draft)
+  overallScore             Decimal?                     @map("overall_score") @db.Decimal(3, 2)
+  performanceRating        String?                      @map("performance_rating")
+  selfComments             String?                      @map("self_comments")
+  seniorComments           String?                      @map("senior_comments")
+  seniorFeedback           String?                      @map("senior_feedback")
+  managerComments          String?                      @map("manager_comments")
+  managerFeedback          String?                      @map("manager_feedback")
+  deptApprovalNotes        String?                      @map("dept_approval_notes")
+  createdAt                DateTime                     @default(now()) @map("created_at")
+  updatedAt                DateTime                     @updatedAt @map("updated_at")
+  submittedAt              DateTime?                    @map("submitted_at")
+  reviewedAt               DateTime?                    @map("reviewed_at")
+  isDeleted                Boolean                      @default(false) @map("is_deleted")
+  auditLog                 EvaluationAudit[]
+  scores                   EvaluationScore[]
+  evaluatee                User                         @relation("Evaluatee", fields: [evaluateeId], references: [id])
+  evaluationPeriod         EvaluationPeriod             @relation(fields: [evaluationPeriodId], references: [id])
+  evaluator                User?                        @relation("Evaluator", fields: [evaluatorId], references: [id])
+
+  @@unique([evaluateeId, evaluationPeriodId])
+  @@map("evaluations")
+}
+
+model EvaluationScore {
+  id           String             @id @default(uuid())
+  evaluationId String             @map("evaluation_id")
+  criteriaId   String             @map("criteria_id")
+  stage        EvaluationStage    @default(self)
+  score        Int
+  evidence     String?
+  comments     String?
+  createdAt    DateTime           @default(now()) @map("created_at")
+  updatedAt    DateTime           @updatedAt @map("updated_at")
+  criteria     EvaluationCriteria @relation(fields: [criteriaId], references: [id])
+  evaluation   Evaluation         @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+
+  @@unique([evaluationId, criteriaId, stage])
+  @@map("evaluation_scores")
+}
+
+
+enum UserRole {
+  admin
+  manager
+  department_manager
+  team_manager
+  senior
+  junior
+}
+
+enum EmployeeLevel {
+  junior
+  mid_level
+  senior
+}
+
+enum EvaluationType {
+  self
+  manager
+}
+
+enum EvaluationStatus {
+  draft
+  self_submitted
+  senior_submitted
+  manager_submitted
+  dept_approved
+  final_approved
+  revision_requested
+  archived
+}
+
+enum EvaluationStage {
+  self
+  senior
+  manager
+}
+
+enum PeriodStatus {
+  upcoming
+  active
+  inactive
+}
+
+

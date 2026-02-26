@@ -77,7 +77,7 @@ router.get(
                         orderBy: { displayOrder: 'asc' },
                     },
                     _count: {
-                        select: { users: true },
+                        select: { users: { where: { isActive: true } } },
                     },
                 },
                 orderBy: { name: 'asc' },

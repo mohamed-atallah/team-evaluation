@@ -22,7 +22,10 @@ router.get('/', async (req: AuthRequest, res: Response, next: NextFunction) => {
       include: {
         department: { select: { id: true, name: true } },
         _count: {
-          select: { users: true, criteria: true }
+          select: {
+            users: { where: { isActive: true } },
+            criteria: true,
+          }
         }
       },
       orderBy: { name: 'asc' },
@@ -49,7 +52,7 @@ router.get('/:id', async (req: AuthRequest, res: Response, next: NextFunction) =
           orderBy: { displayOrder: 'asc' }
         },
         _count: {
-          select: { users: true }
+          select: { users: { where: { isActive: true } } }
         }
       },
     });

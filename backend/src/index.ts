@@ -17,6 +17,7 @@ import roleRoutes from './routes/role.routes';
 import levelRoutes from './routes/level.routes';
 import permissionRoutes from './routes/permission.routes';
 import jobTitleRoutes from './routes/jobTitle.routes';
+import settingsRoutes from './routes/settings.routes';
 import { errorHandler } from './middleware/error.middleware';
 import { i18nMiddleware } from './middleware/i18n.middleware';
 import swaggerUi from 'swagger-ui-express';
@@ -34,7 +35,8 @@ app.use(cors({
   credentials: true,
 }));
 app.use(morgan('dev'));
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(cookieParser());
 app.use(i18nMiddleware);
 
@@ -51,6 +53,7 @@ app.use('/api/roles', roleRoutes);
 app.use('/api/levels', levelRoutes);
 app.use('/api/permissions', permissionRoutes);
 app.use('/api/job-titles', jobTitleRoutes);
+app.use('/api/settings', settingsRoutes);
 
 // API Documentation
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));

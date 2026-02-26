@@ -335,4 +335,13 @@ enum PeriodStatus {
   inactive
 }
 
+model AppSettings {
+  id        String   @id @default("singleton")
+  appName   String   @default("EvalPro") @map("app_name")
+  logoUrl   String?  @map("logo_url") @db.Text
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("app_settings")
+}
+
 

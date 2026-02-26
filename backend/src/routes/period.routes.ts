@@ -21,7 +21,7 @@ router.get('/', async (req: AuthRequest, res: Response, next: NextFunction) => {
         creator: { select: { firstName: true, lastName: true } },
         _count: { select: { evaluations: true } },
       },
-      orderBy: { startDate: 'desc' },
+      orderBy: { startDate: 'asc' },
     });
 
     res.json(periods);

@@ -249,7 +249,7 @@ model Evaluation {
   evaluateeId              String                       @map("evaluatee_id")
   evaluatorId              String?                      @map("evaluator_id")
   seniorId                 String?                      @map("senior_id")
-  evaluationPeriodId       String                       @map("evaluation_period_id")
+  evaluationPeriodId       String?                      @map("evaluation_period_id")
   status                   EvaluationStatus             @default(draft)
   overallScore             Decimal?                     @map("overall_score") @db.Decimal(3, 2)
   performanceRating        String?                      @map("performance_rating")
@@ -264,10 +264,12 @@ model Evaluation {
   submittedAt              DateTime?                    @map("submitted_at")
   reviewedAt               DateTime?                    @map("reviewed_at")
   isDeleted                Boolean                      @default(false) @map("is_deleted")
+  isCalculated             Boolean                      @default(false) @map("is_calculated")
+  sourceEvaluationIds      String[]                     @map("source_evaluation_ids")
   auditLog                 EvaluationAudit[]
   scores                   EvaluationScore[]
   evaluatee                User                         @relation("Evaluatee", fields: [evaluateeId], references: [id])
-  evaluationPeriod         EvaluationPeriod             @relation(fields: [evaluationPeriodId], references: [id])
+  evaluationPeriod         EvaluationPeriod?            @relation(fields: [evaluationPeriodId], references: [id])
   evaluator                User?                        @relation("Evaluator", fields: [evaluatorId], references: [id])
 
   @@unique([evaluateeId, evaluationPeriodId])
@@ -279,7 +281,7 @@ model EvaluationScore {
   evaluationId String             @map("evaluation_id")
   criteriaId   String             @map("criteria_id")
   stage        EvaluationStage    @default(self)
-  score        Int
+  score        Decimal            @db.Decimal(4, 2)
   evidence     String?
   comments     String?
   createdAt    DateTime           @default(now()) @map("created_at")
@@ -321,12 +323,14 @@ enum EvaluationStatus {
   final_approved
   revision_requested
   archived
+  calculated
 }
 
 enum EvaluationStage {
   self
   senior
   manager
+  calculated
 }
 
 enum PeriodStatus {

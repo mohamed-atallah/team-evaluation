@@ -52,33 +52,35 @@ cd ../frontend && npm install
 backend/src/
 ├── index.ts              # Express app entry, middleware setup, all route mounts
 ├── routes/               # API endpoints (one file per domain)
-├── services/             # Business logic (evaluation, auth, competency, permission, reviewer)
-├── middleware/           # auth.middleware.ts (JWT + role/permission guards), error, i18n, telescope
+├── services/             # Business logic: auth.service.ts, evaluation.service.ts, permission.service.ts
+├── middleware/           # auth.middleware.ts (JWT + role/permission guards), error.middleware.ts, i18n.middleware.ts
 ├── config/               # prisma.ts (singleton), swagger.ts (OpenAPI spec)
+├── i18n/                 # Translation files: en.json, ar.json
 ├── types/                # Shared TypeScript types (AuthRequest, JwtPayload, etc.)
 └── utils/                # Utility helpers
 
 frontend/src/
 ├── app/                  # Next.js App Router pages
 │   ├── dashboard/        # Main dashboard
-│   ├── evaluations/      # Evaluation CRUD
+│   ├── evaluations/      # Evaluation CRUD ([id]/, new/)
 │   ├── reports/          # Reports & analytics
-│   ├── admin/            # Admin dashboard + job-titles/[id]/competencies/
+│   ├── admin/            # Admin dashboard + job-titles/
 │   ├── auth/login/       # Login page
-│   ├── team/             # Team management
-│   ├── 360-feedback/     # 360-degree feedback flows (+ [evaluationId]/)
-│   ├── competencies/     # Competency management (+ [id]/, [id]/edit/, new/)
-│   └── telescope/        # Request monitoring dashboard
+│   └── team/             # Team management
 ├── components/
 │   ├── ui/               # Reusable UI components (Toast, DialogProvider, etc.)
 │   ├── auth/             # HasPermission wrapper component
-│   ├── evaluation/       # Evaluation-specific components (evaluations/ has [id]/, new/, [id]/reviewers/)
+│   ├── evaluation/       # CriteriaCard, EvaluationPDF, ScoreSelector
 │   ├── dashboard/        # Charts & widgets
-│   ├── performance/      # Performance components
 │   └── reports/          # PDF/Excel export
-├── hooks/useAuth.tsx     # Auth context provider + hook
-├── lib/api.ts            # Axios client with Bearer token injection + 401 auto-refresh
-├── middleware.ts         # Next.js middleware: locale detection + cookie setting
+├── hooks/
+│   ├── useAuth.tsx       # Auth context provider + hook
+│   └── useAppSettings.tsx # App-wide settings (name, logo) fetched from /api/settings
+├── lib/
+│   ├── api.ts            # Axios client with Bearer token injection + 401 auto-refresh
+│   └── utils.ts          # cn(), getScoreColor(), getPerformanceColor(), getStatusColor(), getLevelLabel(), formatDate()
+├── types/                # Shared frontend TypeScript types
+├── middleware.ts          # Next.js middleware: locale detection + cookie setting
 └── i18n/config.ts        # Locale list, direction map (en: ltr, ar: rtl)
 ```
 
@@ -111,28 +113,39 @@ draft → self_submitted → senior_submitted → manager_submitted → dept_app
                                                               ↘ revision_requested → (back to earlier stage)
                                                                                     archived
 ```
-`EvaluationScore` captures scores per `(evaluationId, criteriaId, stage)` where `stage ∈ {self, senior, manager}`, enforced by a composite unique constraint. Evaluations are unique per `(evaluateeId, evaluationPeriodId)`.
+There is also a parallel `calculated` status for multi-evaluation aggregates (see below).
+
+`EvaluationScore` captures scores per `(evaluationId, criteriaId, stage)` where `stage ∈ {self, senior, manager, calculated}`, enforced by a composite unique constraint. Evaluations are unique per `(evaluateeId, evaluationPeriodId)`.
 
 Soft delete: `Evaluation.isDeleted` flag is set instead of a hard delete; `listAll()` accepts `includeDeleted` query param.
 
-### Composite Scoring: WHAT × HOW
-Each evaluation produces a final `overallScore` combining two pillars:
-- **HOW** (`howScore`): Performance on individual objectives/KPIs — weighted by `howWeight` (default **0.60**)
-- **BEHAVIOR** (`behaviorScore`): Competency assessments (self + peer + senior + manager) — weighted by `behaviorWeight` (default **0.40**)
-
-Both weights are stored on `JobTitle` and copied onto each `Evaluation` at creation time. The formula is `overallScore = behaviorScore * behaviorWeight + howScore * howWeight`.
+`overallScore` is currently the arithmetic mean of all `EvaluationScore.score` values; `performanceRating` is derived from it. `JobTitle` stores `howWeight` (default 0.60) and `behaviorWeight` (default 0.40) for future weighted composite scoring.
 
 Ratings: Outstanding (4.5–5.0), Exceeds (3.5–4.4), Meets (2.5–3.4), Below (1.5–2.4), Needs Improvement (1.0–1.4)
+
+### Multi-Evaluation Calculation
+`POST /api/evaluations/calculated` (requires `evaluations:create_calculated` permission) creates a synthetic aggregate evaluation from ≥2 source evaluations belonging to the same employee. Logic in `EvaluationService.createCalculated()`:
+1. For each source evaluation, pick the best-available stage score per criteria (manager → senior → self)
+2. Average those best scores per criteria across all source evaluations
+3. Set `overallScore` = mean of all per-criteria averages
+4. Persist as a new `Evaluation` with `isCalculated=true`, `sourceEvaluationIds=[...]`, `status='calculated'`, and `evaluationPeriodId=null`
+5. Score rows written with `stage='calculated'`
+
+Source evaluations with `isCalculated=true` cannot be used as inputs. `EvaluationScore.score` is `Decimal(4,2)` — always cast to `Number()` before arithmetic (Prisma returns `Decimal` objects, not plain numbers).
 
 ### Database Relations — Key Concepts
 - **Role vs JobTitle**: Users carry two separate concepts:
   - `roleId` → custom `Role` (many-to-many `RolePermission`) — controls feature access
-  - `jobTitleId` → `JobTitle` — determines which `EvaluationCriteria` and `BehavioralCompetency` apply
+  - `jobTitleId` → `JobTitle` — determines which `EvaluationCriteria` applies
   - `User.role` (enum) — legacy coarse-grained field used directly in `authorize()` guards
 - `EvaluationCriteria` ↔ `JobTitle` via `JobTitleCriteria` junction (with optional per-job `weight` and `displayOrder`)
-- `BehavioralCompetency` ↔ `JobTitle` via `JobTitleCompetency` (with `expectedLevel`)
-- `DevelopmentPlan` is 1:1 with `Evaluation`; `GoalProgress` tracks updates to it
+- `Level` is scoped to a `Role` (unique name per role) and can be assigned to users
 - `RefreshToken` model stores token string + `expiresAt` in the DB; login/register create them, logout deletes them
+- `AppSettings` — singleton model (id always `"singleton"`) for app-wide config (appName, logoUrl); auto-created with defaults on first read
+- `EvaluationAudit` — append-only audit trail for evaluation status transitions
+- `Evaluation.evaluationPeriodId` is nullable — calculated evaluations (via `POST /calculated`) have no period
+- `Evaluation.isCalculated` / `sourceEvaluationIds` — mark and trace multi-source aggregate evaluations
+- `EvaluationScore.score` is `Decimal(4,2)` — Prisma returns a `Decimal` object; wrap in `Number()` before arithmetic
 
 ### Error Handling
 - `AppError` class (extends `Error`) carries `statusCode` and `isOperational` flag
@@ -140,35 +153,26 @@ Ratings: Outstanding (4.5–5.0), Exceeds (3.5–4.4), Meets (2.5–3.4), Below 
 - Global error handler in `middleware/error.middleware.ts` maps `AppError` to its status code; unexpected errors return 500
 - Backend error messages are localized via `req.t('key')` (attached by `i18n.middleware.ts` from cookie or `Accept-Language` header)
 
-### 360-Degree Feedback
-`EvaluationReviewer` assigns `peer` or `subordinate` reviewers (optionally anonymous) to an evaluation. Reviewers submit `PeerCompetencyAssessment` records; aggregation (`triggerAggregation`) rolls up peer/subordinate scores into `Evaluation.peerBehaviorScore` / `subordinateBehaviorScore`.
-
 ### Frontend Utilities
-- `lib/api.ts` exports typed API namespaces (`authApi`, `usersApi`, `evaluationsApi`, `criteriaApi`, `jobTitlesApi`, etc.) plus `getApiErrorMessage()` to extract error messages from nested Axios error responses
+- `lib/api.ts` exports typed API namespaces (`authApi`, `usersApi`, `evaluationsApi`, `criteriaApi`, `jobTitlesApi`, `departmentsApi`, `periodsApi`, `reportsApi`, `teamsApi`, `rolesApi`, `permissionsApi`, `levelsApi`, `settingsApi`) plus `getApiErrorMessage()` to extract error messages from nested Axios error responses
 - `lib/utils.ts` exports: `cn()` (clsx + tailwind-merge), `getScoreColor()`, `getPerformanceColor()`, `getStatusColor()`, `getLevelLabel()`, `formatDate()`
 - No runtime request validation library (Zod, Yup, etc.) — backend uses basic truthiness checks; database constraints enforce uniqueness
-
-### Telescope (Request Logging)
-- `telescopeMiddleware` logs every non-telescope API request to the DB (method, path, status, duration, user, request/response body with password scrubbed)
-- Viewable at `/api/telescope` (backend) and `/telescope` (frontend dashboard)
+- `useAppSettings` hook fetches `/api/settings` (public endpoint, no auth required) on mount and provides app name/logo throughout the UI
 
 ### Testing
 There is no test setup — no jest.config, vitest.config, or `.test`/`.spec` files exist in the src directories.
 
 ## API Base Routes
 - Auth: `/api/auth/*`
-- Evaluations: `/api/evaluations/*`
+- Evaluations: `/api/evaluations/*`; `POST /api/evaluations/calculated` (aggregate)
 - Criteria: `/api/criteria/*`
 - Periods: `/api/periods/*`
 - Reports: `/api/reports/*`
-- Plans: `/api/plans/*`
 - Teams: `/api/teams/*`, Departments: `/api/departments/*`
-- Users: `/api/users/*`
+- Users: `/api/users/*`; `GET ?includeInactive=true` lists deactivated users; `PATCH /:id/activate` restores them
 - Roles: `/api/roles/*`, Levels: `/api/levels/*`, Permissions: `/api/permissions/*`
 - Job Titles: `/api/job-titles/*`
-- Competencies: `/api/competencies/*`
-- Reviewers: `/api/reviewers/*`
-- Telescope: `/api/telescope/*`
+- Settings: `/api/settings/*` (GET is public; PUT requires admin)
 - API Docs (Swagger UI): `/api-docs`
 - Health: `/api/health`
 
@@ -189,3 +193,6 @@ admin@example.com / admin123
 manager@example.com / manager123
 junior@example.com / tester123
 ```
+
+
+

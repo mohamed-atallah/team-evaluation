@@ -26,9 +26,12 @@ export class EvaluationService {
       throw new AppError('Evaluatee not found', 404);
     }
 
-    // Check if the evaluatee is a Junior and needs a Senior assigned
-    if (evaluatee.role === 'junior' && !evaluatee.seniorId && !evaluatee.managerId) {
-      throw new AppError('Cannot create evaluation: Junior must be assigned a Senior or Team Manager', 400);
+    // Any employee below manager-level must have at least a senior reviewer or a direct manager
+    if (!evaluatee.seniorId && !evaluatee.managerId) {
+      const isManagerLevel = ['team_manager', 'department_manager', 'admin', 'manager'].includes(evaluatee.role);
+      if (!isManagerLevel) {
+        throw new AppError('Cannot create evaluation: Employee must be assigned a Senior or Direct Manager', 400);
+      }
     }
 
     // Check if criteria defined for the user's job title
@@ -171,7 +174,7 @@ export class EvaluationService {
         if (bestStage) {
           const stageScores = evaluation.scores.filter(s => s.stage === bestStage);
           if (stageScores.length > 0) {
-            const total = stageScores.reduce((sum, s) => sum + s.score, 0);
+            const total = stageScores.reduce((sum, s) => sum + Number(s.score), 0);
             const avg = total / stageScores.length;
             const rating = this.getPerformanceRating(avg);
 
@@ -376,6 +379,18 @@ export class EvaluationService {
       if (currentUser.role !== 'admin' && (!hasManagerRole || (!isDirectManager && !isTeamManager && !isDeptManager))) {
         throw new AppError('Only the authorized Team Manager can save manager-level scores', 403);
       }
+
+      // Enforce stage ordering: manager can only score after the appropriate prior stage
+      if (currentUser.role !== 'admin') {
+        const hasSenior = !!evaluation.evaluatee.seniorId;
+        const blockedStatuses = ['draft', 'revision_requested', ...(hasSenior ? ['self_submitted'] : [])];
+        if (blockedStatuses.includes(evaluation.status)) {
+          throw new AppError(
+            `Manager scores can only be saved after ${hasSenior ? 'senior' : 'self'} submission`,
+            400
+          );
+        }
+      }
     }
 
     // Validate scores are between 1-5
@@ -425,7 +440,7 @@ export class EvaluationService {
     });
 
     if (scores.length > 0) {
-      const totalScore = scores.reduce((sum, s) => sum + s.score, 0);
+      const totalScore = scores.reduce((sum, s) => sum + Number(s.score), 0);
       const overallScore = totalScore / scores.length;
       const performanceRating = this.getPerformanceRating(overallScore);
 
@@ -478,7 +493,11 @@ export class EvaluationService {
       },
     });
 
-    await this.createAuditLog(evaluationId, currentUser.userId, 'self_submitted', null, 'Self-evaluation submitted');
+    const hasSenior = !!evaluation.evaluatee.seniorId;
+    const nextStepNote = hasSenior
+      ? 'Awaiting senior review'
+      : 'Awaiting direct manager review (senior stage skipped – no senior assigned)';
+    await this.createAuditLog(evaluationId, currentUser.userId, 'self_submitted', null, `Self-evaluation submitted – ${nextStepNote}`);
 
     return updated;
   }
@@ -495,6 +514,9 @@ export class EvaluationService {
       const hasSeniorRole = ['senior', 'team_manager', 'department_manager'].includes(currentUser.role);
       if (!isSenior || !hasSeniorRole) {
         throw new AppError('Only the assigned Senior (or someone with Senior role) can submit this stage', 403);
+      }
+      if (evaluation.status !== 'self_submitted') {
+        throw new AppError('Senior evaluation can only be submitted after self-evaluation is submitted', 400);
       }
     }
 
@@ -566,6 +588,18 @@ export class EvaluationService {
       if (!hasManagerRole || (!isDirectManager && !isTeamManager && !isDeptManager)) {
         throw new AppError('Only an authorized Team Manager can submit this stage', 403);
       }
+
+      // Enforce stage ordering based on whether a senior is assigned
+      const hasSenior = !!evaluation.evaluatee.seniorId;
+      const requiredPriorStatus = hasSenior ? 'senior_submitted' : 'self_submitted';
+      if (evaluation.status !== requiredPriorStatus) {
+        throw new AppError(
+          hasSenior
+            ? 'Manager review can only be submitted after the senior has completed their review'
+            : 'Manager review can only be submitted after the employee has submitted their self-evaluation',
+          400
+        );
+      }
     }
 
     if (!evaluation.evaluatee.jobTitleId) {
@@ -588,7 +622,7 @@ export class EvaluationService {
     }
 
     // Calculate final score using the helper
-    const totalScore = evaluation.scores.reduce((sum, s) => sum + s.score, 0);
+    const totalScore = evaluation.scores.reduce((sum, s) => sum + Number(s.score), 0);
     const overallScore = totalScore / evaluation.scores.length;
     const performanceRating = this.getPerformanceRating(overallScore);
 
@@ -604,7 +638,11 @@ export class EvaluationService {
       },
     });
 
-    await this.createAuditLog(evaluationId, currentUser.userId, 'manager_submitted', null, 'Team Manager review submitted');
+    const hasSeniorForAudit = !!evaluation.evaluatee.seniorId;
+    const auditNote = hasSeniorForAudit
+      ? 'Team Manager review submitted'
+      : 'Team Manager review submitted (Senior stage skipped – no assigned senior)';
+    await this.createAuditLog(evaluationId, currentUser.userId, 'manager_submitted', null, auditNote);
 
     return updated;
   }
@@ -882,6 +920,111 @@ export class EvaluationService {
     });
 
     return { message: `${ids.length} evaluations permanently deleted` };
+  }
+
+  static async createCalculated(evaluationIds: string[], currentUser: { userId: string; role: string }) {
+    if (!evaluationIds || evaluationIds.length < 2) {
+      throw new AppError('Select at least 2 evaluations to create a calculated evaluation', 400);
+    }
+
+    const evaluations = await prisma.evaluation.findMany({
+      where: { id: { in: evaluationIds }, isDeleted: false },
+      include: {
+        evaluatee: { select: { id: true, firstName: true, lastName: true } },
+        scores: { include: { criteria: true } },
+      },
+    });
+
+    if (evaluations.length !== evaluationIds.length) {
+      throw new AppError('One or more evaluations not found', 404);
+    }
+
+    // Validate all belong to the same employee
+    const uniqueEvaluatees = new Set(evaluations.map(e => e.evaluateeId));
+    if (uniqueEvaluatees.size > 1) {
+      throw new AppError('All selected evaluations must belong to the same employee', 400);
+    }
+
+    // Reject already-calculated evaluations as sources
+    if (evaluations.some(e => e.isCalculated)) {
+      throw new AppError('Cannot include already-calculated evaluations as sources', 400);
+    }
+
+    const evaluateeId = evaluations[0].evaluateeId;
+
+    // ── Step 1: Build per-criteria averages ──────────────────────────────────
+    // For each source evaluation, pick the best-available stage score per
+    // criteria (manager → senior → self), then average across all evals.
+    // Scores are keyed by criteriaId so mapping is always by ID, never by index.
+    const criteriaScoresMap = new Map<string, number[]>();
+    for (const eval_ of evaluations) {
+      const byStage: Record<string, Record<string, number>> = {};
+      for (const s of eval_.scores) {
+        if (!byStage[s.criteriaId]) byStage[s.criteriaId] = {};
+        byStage[s.criteriaId][s.stage] = Number(s.score);
+      }
+      for (const [criteriaId, stageScores] of Object.entries(byStage)) {
+        const best = stageScores['manager'] ?? stageScores['senior'] ?? stageScores['self'];
+        if (best !== undefined) {
+          const arr = criteriaScoresMap.get(criteriaId) || [];
+          arr.push(best);
+          criteriaScoresMap.set(criteriaId, arr);
+        }
+      }
+    }
+
+    if (criteriaScoresMap.size === 0) {
+      throw new AppError('None of the selected evaluations have scores yet', 400);
+    }
+
+    // ── Step 2: Compute per-criteria averages (full decimal precision) ────────
+    const criteriaAverages = new Map<string, number>();
+    for (const [criteriaId, scores] of criteriaScoresMap) {
+      const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+      criteriaAverages.set(criteriaId, parseFloat(avg.toFixed(2)));
+    }
+
+    // ── Step 3: Overall score = mean of all per-criteria averages ────────────
+    // This mirrors how regular evaluations compute overallScore
+    // (mean of all score rows), keeping the metrics consistent.
+    const allCriteriaAvgs = Array.from(criteriaAverages.values());
+    const overallAvg = allCriteriaAvgs.reduce((a, b) => a + b, 0) / allCriteriaAvgs.length;
+    const overallScore = parseFloat(overallAvg.toFixed(2));
+    const performanceRating = this.getPerformanceRating(overallScore);
+
+    // ── Step 4: Persist evaluation + per-criteria score rows ─────────────────
+    const calculated = await prisma.evaluation.create({
+      data: {
+        evaluateeId,
+        isCalculated: true,
+        sourceEvaluationIds: evaluationIds,
+        overallScore,
+        performanceRating,
+        status: 'calculated',
+      },
+      include: {
+        evaluatee: { select: { id: true, firstName: true, lastName: true, role: true, jobTitleId: true, levelId: true } },
+      },
+    });
+
+    await prisma.evaluationScore.createMany({
+      data: Array.from(criteriaAverages.entries()).map(([criteriaId, avg]) => ({
+        evaluationId: calculated.id,
+        criteriaId,
+        stage: 'calculated' as const,
+        score: avg,   // Decimal(4,2) — preserves e.g. 3.50
+      })),
+    });
+
+    await this.createAuditLog(
+      calculated.id,
+      currentUser.userId,
+      'calculated',
+      null,
+      `Calculated from ${evaluationIds.length} evaluations — ${criteriaAverages.size} criteria averaged, overall=${overallScore}`
+    );
+
+    return calculated;
   }
 
   private static getPerformanceRating(score: number): string {

@@ -150,11 +150,11 @@ export class EvaluationService {
         isTeamLead = !!team;
       }
 
-      // For department manager, check if the evaluatee's department manager matches
-      const departmentIdent = await prisma.department.findFirst({
-        where: { id: evaluation.evaluatee.departmentId ?? undefined, managerId: currentUser.userId }
-      });
-      isDeptManager = !!departmentIdent;
+      // For department manager, check via direct departmentId OR via team → team's department
+      isDeptManager = await this.isDepartmentManagerOf(
+        { departmentId: evaluation.evaluatee.departmentId, teamId: evaluation.evaluatee.teamId },
+        currentUser.userId
+      );
 
       isAuthorized = isEvaluatee || isEvaluator || isSenior || isTeamManager || isTeamLead || isDeptManager;
     }
@@ -224,7 +224,9 @@ export class EvaluationService {
         { evaluatee: { managerId: currentUser.userId } },
         { evaluatee: { seniorId: currentUser.userId } },
         { evaluatee: { team: { managerId: currentUser.userId } } },
-        { evaluatee: { department: { managerId: currentUser.userId } } }
+        { evaluatee: { department: { managerId: currentUser.userId } } },
+        // Also include evaluations of members whose team belongs to a department managed by this user
+        { evaluatee: { team: { department: { managerId: currentUser.userId } } } },
       ];
     } else {
       // Juniors see only their own
@@ -366,13 +368,10 @@ export class EvaluationService {
         isTeamManager = !!team;
       }
 
-      let isDeptManager = false;
-      if (evaluation.evaluatee.departmentId) {
-        const dept = await prisma.department.findFirst({
-          where: { id: evaluation.evaluatee.departmentId, managerId: currentUser.userId }
-        });
-        isDeptManager = !!dept;
-      }
+      const isDeptManager = await this.isDepartmentManagerOf(
+        { departmentId: evaluation.evaluatee.departmentId, teamId: evaluation.evaluatee.teamId },
+        currentUser.userId
+      );
 
       const hasManagerRole = ['team_manager', 'department_manager', 'admin'].includes(currentUser.role);
 
@@ -575,17 +574,14 @@ export class EvaluationService {
         isTeamManager = !!team;
       }
 
-      let isDeptManager = false;
-      if (evaluation.evaluatee.departmentId) {
-        const dept = await prisma.department.findFirst({
-          where: { id: evaluation.evaluatee.departmentId, managerId: currentUser.userId }
-        });
-        isDeptManager = !!dept;
-      }
+      const isDeptManagerForSubmit = await this.isDepartmentManagerOf(
+        { departmentId: evaluation.evaluatee.departmentId, teamId: evaluation.evaluatee.teamId },
+        currentUser.userId
+      );
 
       const hasManagerRole = ['team_manager', 'department_manager'].includes(currentUser.role);
 
-      if (!hasManagerRole || (!isDirectManager && !isTeamManager && !isDeptManager)) {
+      if (!hasManagerRole || (!isDirectManager && !isTeamManager && !isDeptManagerForSubmit)) {
         throw new AppError('Only an authorized Team Manager can submit this stage', 403);
       }
 
@@ -655,13 +651,18 @@ export class EvaluationService {
 
     if (!evaluation) throw new AppError('Evaluation not found', 404);
 
-    // Check if user is Dept Manager
-    const dept = await prisma.department.findFirst({
-      where: { id: evaluation.evaluatee.departmentId ?? undefined, managerId: currentUser.userId }
-    });
+    // Check if user is Dept Manager — via direct departmentId or via team → team's department
+    const isActingDeptManager = await this.isDepartmentManagerOf(
+      { departmentId: evaluation.evaluatee.departmentId, teamId: evaluation.evaluatee.teamId },
+      currentUser.userId
+    );
 
-    if (!dept && currentUser.role !== 'admin') {
+    if (!isActingDeptManager && currentUser.role !== 'admin') {
       throw new AppError('Only the Department Manager can approve this evaluation', 403);
+    }
+
+    if (evaluation.status !== 'manager_submitted' && currentUser.role !== 'admin') {
+      throw new AppError('Department approval can only be done after the manager has submitted their review', 400);
     }
 
     const updated = await prisma.evaluation.update({
@@ -698,13 +699,10 @@ export class EvaluationService {
         isTeamManager = !!team;
       }
 
-      let isDeptManager = false;
-      if (evaluation.evaluatee.departmentId) {
-        const dept = await prisma.department.findFirst({
-          where: { id: evaluation.evaluatee.departmentId, managerId: currentUser.userId }
-        });
-        isDeptManager = !!dept;
-      }
+      const isDeptManager = await this.isDepartmentManagerOf(
+        { departmentId: evaluation.evaluatee.departmentId, teamId: evaluation.evaluatee.teamId },
+        currentUser.userId
+      );
 
       isSuperior = isDirectSuperior || isTeamManager || isDeptManager;
     }
@@ -840,7 +838,7 @@ export class EvaluationService {
     const evaluation = await prisma.evaluation.findUnique({
       where: { id: evaluationId },
       include: {
-        evaluatee: { select: { id: true, managerId: true, seniorId: true, departmentId: true } }
+        evaluatee: { select: { id: true, managerId: true, seniorId: true, departmentId: true, teamId: true } }
       }
     });
 
@@ -856,11 +854,11 @@ export class EvaluationService {
       const isManagerOfEvaluatee = evaluation.evaluatee?.managerId === currentUser.userId;
       const isSeniorOfEvaluatee = evaluation.evaluatee?.seniorId === currentUser.userId;
 
-      // For department manager, check if the evaluatee is in their department
-      const departmentIdent = await prisma.department.findFirst({
-        where: { id: evaluation.evaluatee.departmentId ?? undefined, managerId: currentUser.userId }
-      });
-      const isDeptManager = !!departmentIdent;
+      // For department manager, check via direct departmentId OR via team → team's department
+      const isDeptManager = await this.isDepartmentManagerOf(
+        { departmentId: evaluation.evaluatee.departmentId, teamId: evaluation.evaluatee.teamId },
+        currentUser.userId
+      );
 
       isAuthorized = isEvaluatee || isManagerOfEvaluatee || isSeniorOfEvaluatee || isDeptManager;
     }
@@ -1033,5 +1031,42 @@ export class EvaluationService {
     if (score >= 2.5) return 'Meets Expectations';
     if (score >= 1.5) return 'Below Expectations';
     return 'Needs Significant Improvement';
+  }
+
+  /**
+   * Checks whether `managerId` is the department manager of the given evaluatee.
+   * Resolves via two paths:
+   *   1. Evaluatee's direct departmentId → Department.managerId
+   *   2. Evaluatee's teamId → Team.departmentId → Department.managerId
+   * This handles the common case where an employee's departmentId is not set directly
+   * on the user record but is implied by their team membership.
+   */
+  static async isDepartmentManagerOf(
+    evaluatee: { departmentId: string | null; teamId: string | null },
+    managerId: string
+  ): Promise<boolean> {
+    // Path 1: direct departmentId on the user
+    if (evaluatee.departmentId) {
+      const dept = await prisma.department.findFirst({
+        where: { id: evaluatee.departmentId, managerId },
+      });
+      if (dept) return true;
+    }
+
+    // Path 2: via team → team's departmentId
+    if (evaluatee.teamId) {
+      const team = await prisma.team.findFirst({
+        where: { id: evaluatee.teamId },
+        select: { departmentId: true },
+      });
+      if (team?.departmentId) {
+        const dept = await prisma.department.findFirst({
+          where: { id: team.departmentId, managerId },
+        });
+        if (dept) return true;
+      }
+    }
+
+    return false;
   }
 }

@@ -50,9 +50,10 @@ router.get(
   hasPermission('admin:manage_users'),
   async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      const { teamId, level, role, roleId, levelId } = req.query;
+      const { teamId, level, role, roleId, levelId, includeInactive } = req.query;
 
-      const where: any = { isActive: true };
+      const where: any = {};
+      if (includeInactive !== 'true') where.isActive = true;
       if (teamId) where.teamId = teamId;
       if (level) where.level = level;
       if (role) where.role = role;
@@ -78,6 +79,7 @@ router.get(
           jobTitleId: true,
           managerId: true,
           yearsExperience: true,
+          isActive: true,
           team: { select: { id: true, name: true } },
           department: { select: { id: true, name: true } },
           dynamicRole: { select: { id: true, name: true } },
@@ -327,6 +329,120 @@ router.delete(
       });
 
       res.json({ message: 'User deactivated' });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// Permanent delete user (admin only)
+router.delete(
+  '/:id/permanent',
+  hasPermission('admin:manage_users'),
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const id = req.params.id as string;
+
+      // Check for evaluations
+      const evaluationsCount = await prisma.evaluation.count({
+        where: {
+          OR: [
+            { evaluateeId: id },
+            { evaluatorId: id }
+          ]
+        }
+      });
+
+      if (evaluationsCount > 0) {
+        throw new AppError('Cannot permanently delete user linked to existing evaluations. Deactivate instead.', 400);
+      }
+
+      await prisma.user.delete({
+        where: { id },
+      });
+
+      res.json({ message: 'User permanently deleted' });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// Bulk soft delete (deactivate) users
+router.post(
+  '/bulk-delete',
+  hasPermission('admin:manage_users'),
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const { ids } = req.body;
+      if (!Array.isArray(ids) || ids.length === 0) {
+        throw new AppError('No user IDs provided', 400);
+      }
+
+      await prisma.user.updateMany({
+        where: { id: { in: ids } },
+        data: { isActive: false },
+      });
+
+      res.json({ message: `${ids.length} users deactivated` });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// Bulk permanent delete users
+router.post(
+  '/bulk-permanent-delete',
+  hasPermission('admin:manage_users'),
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const { ids } = req.body;
+      if (!Array.isArray(ids) || ids.length === 0) {
+        throw new AppError('No user IDs provided', 400);
+      }
+
+      // Check if any of these users have evaluations
+      const evaluations = await prisma.evaluation.findFirst({
+        where: {
+          OR: [
+            { evaluateeId: { in: ids } },
+            { evaluatorId: { in: ids } }
+          ]
+        }
+      });
+
+      if (evaluations) {
+        throw new AppError('Some selected users are linked to evaluations and cannot be permanently deleted. Try deactivating them instead.', 400);
+      }
+
+      const deleteResult = await prisma.user.deleteMany({
+        where: { id: { in: ids } },
+      });
+
+      res.json({ message: `${deleteResult.count} users permanently deleted` });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// Activate (restore) a deactivated user
+router.patch(
+  '/:id/activate',
+  hasPermission('admin:manage_users'),
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const id = req.params.id as string;
+      const user = await prisma.user.findUnique({ where: { id } });
+      if (!user) throw new AppError('User not found', 404);
+
+      await prisma.user.update({
+        where: { id },
+        data: { isActive: true },
+      });
+
+      res.json({ message: 'User activated' });
     } catch (error) {
       next(error);
     }

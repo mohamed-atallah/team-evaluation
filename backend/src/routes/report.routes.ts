@@ -62,9 +62,9 @@ router.get('/individual/:userId', async (req: AuthRequest, res: Response, next: 
 
     // Calculate trends if multiple periods
     const trends = evaluations
-      .filter((e) => e.overallScore)
+      .filter((e) => e.overallScore && e.evaluationPeriod)
       .map((e) => ({
-        period: e.evaluationPeriod.name,
+        period: e.evaluationPeriod!.name,
         score: Number(e.overallScore),
       }));
 

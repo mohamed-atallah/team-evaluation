@@ -55,6 +55,7 @@ async function main() {
     { name: 'evaluations:archive', description: 'Archive/Soft delete evaluations', category: 'evaluations' },
     { name: 'evaluations:approve', description: 'Approve/Review evaluations', category: 'evaluations' },
     { name: 'evaluations:view_all', description: 'View all evaluations in organization', category: 'evaluations' },
+    { name: 'evaluations:create_calculated', description: 'Create calculated (averaged) evaluations from multiple sources', category: 'evaluations' },
 
     // Admin
     { name: 'admin:manage_roles', description: 'Manage roles and permissions', category: 'admin' },

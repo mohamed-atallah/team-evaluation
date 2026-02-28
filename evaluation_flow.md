@@ -18,37 +18,42 @@ This document outlines the end-to-end evaluation lifecycle in the Team Evaluatio
 ### Step B: Self Submission (`self_submitted`)
 - **Action**: The Evaluatee submits their self-evaluation.
 - **Guard**: All criteria must be scored before submission.
-- **Status**: `self_submitted`
+- **Reporting Routing**: The system identifies the next reviewer (Senior if assigned, else Team Manager).
+- **Direct-to-Dept Skip**: If no Senior is assigned and the direct manager is a **Department Manager**, the status may skip directly to `dept_approved` for final validation.
+- **Status**: `self_submitted` (or `dept_approved` if skipping).
 
 ### Step C: Senior Review (`senior_submitted`) - *Optional*
-- **Trigger**: Only occurs if a **Senior** is assigned to the Evaluatee (`seniorId` is present).
-- **Action**: The assigned Senior reviews the self-evaluation and provides their own scores and feedback.
-- **Data**: Senior scores, senior comments, and developmental feedback.
-- **Status**: `senior_submitted`
-- **Note**: If no Senior is assigned, the flow skips directly from `self_submitted` to the Manager Review stage.
+- **Trigger**: Occurs if a **Senior** is assigned.
+- **Action**: Senior provides scores and feedback.
+- **Reporting Routing**: Upon submission, the evaluation is forwarded to the Evaluatee's direct Manager.
+- **Direct-to-Dept Skip**: If the Evaluatee's Manager is a **Department Manager**, the status skips the next scoring stage and moves to `dept_approved`.
+- **Status**: `senior_submitted` (or `dept_approved` if skipping).
+- **Note**: If no Senior is assigned, the flow skips directly from `self_submitted` to the Manager Review stage (unless a direct-to-dept skip occurs).
 
 ### Step D: Manager Review (`manager_submitted`)
-- **Action**: The **Team Manager** (or designated Evaluator) reviews the scores. If Step C was skipped, they review only the self-evaluation.
-- **Data**: Manager scores, final comments, and manager feedback.
-- **Status**: `manager_submitted`
-- **Result**: The system calculates the final `overallScore` and assigns a `performanceRating` (e.g., Meets Expectations, Outstanding).
+- **Action**: The **Current Reviewer** (initially the direct Team Manager) reviews and scores the evaluation.
+- **Reporting Chain Progression**: When a manager submits their review, the system automatically identifies their manager (the next link in the reporting chain).
+- **Branching Logic**:
+    - **Scoring Continue**: If the *next* reviewer is a standard Manager, the status remains `manager_submitted` and the evaluation is forwarded for another round of scoring. *Note: Each manager in the chain overwrites the 'manager' stage scores with their own definitive values.*
+    - **Skip to Approval**: If the *next* reviewer is a **Department Manager**, the system skips further scoring and moves the status directly to `dept_approved` (Forwarded for Approval).
+    - **Finalization**: If no superior is found (top of the chain), the status becomes `final_approved`.
 
 ### Step E: Department Approval (`dept_approved`)
-- **Action**: The **Department Manager** reviews the entire evaluation and provides final approval.
-- **Data**: Approval notes.
-- **Status**: `dept_approved`
-- **Note**: This is the final step in the standard workflow.
+- **Action**: This is an **Approve-only stage** triggered when the reporting chain reaches a Department Manager.
+- **Behavior**: Instead of re-scoring the criteria, the Department Manager reviews the existing manager/senior scores and provide their **Final Approval Notes**.
+- **Role**: Effectively acts as a validation gate for the entire department's results.
 
-### Step F: Archival/Finalization (`final_approved`)
+### Step F: Finalization (`final_approved`)
 - **Status**: `final_approved`
-- **Usage**: Used for historic records or when an admin manually marks the process as fully concluded beyond department approval.
+- **Definition**: The terminal state of the evaluation. Reached either after Department Approval or when the reporting chain is exhausted.
 
 ---
 
 ## 3. Revisions & Corrections
-At any point after self-submission (Stages C, D, or E), a superior (Senior, Manager, or Admin) can trigger a **Revision Requested**:
-- **Action**: Use the "Request Revision" action with notes explaining what needs to be changed.
-- **Status**: `revision_requested` (Moves back to a state where the Evaluatee or previous reviewer can edit).
+At any point after self-submission, an authorized reviewer (current reviewer, superior, or admin) can trigger a **Revision Requested**:
+- **Action**: Use the "Request Revision" action with notes explaining the requirement.
+- **Status**: `revision_requested` (Moves back to a state where the Evaluatee can edit).
+- **Note**: The system now explicitly allows the **Current Active Reviewer** in the chain to request revisions.
 
 ## 4. Scoring Logic
 - **Scale**: 1.0 to 5.0.

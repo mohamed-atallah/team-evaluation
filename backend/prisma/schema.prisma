@@ -154,6 +154,7 @@ model User {
   createdPeriods       EvaluationPeriod[]
   evaluationsReceived  Evaluation[]          @relation("Evaluatee")
   evaluationsGiven     Evaluation[]          @relation("Evaluator")
+  pendingReviews       Evaluation[]          @relation("EvaluationCurrentReviewer")
   actionLogs           PermissionAuditLog[]
   refreshTokens        RefreshToken[]
   managedTeams         Team[]                @relation("TeamManager")
@@ -266,11 +267,14 @@ model Evaluation {
   isDeleted                Boolean                      @default(false) @map("is_deleted")
   isCalculated             Boolean                      @default(false) @map("is_calculated")
   sourceEvaluationIds      String[]                     @map("source_evaluation_ids")
+  calculatedPeriodName     String?                      @map("calculated_period_name")
+  currentReviewerId        String?                      @map("current_reviewer_id")
   auditLog                 EvaluationAudit[]
   scores                   EvaluationScore[]
   evaluatee                User                         @relation("Evaluatee", fields: [evaluateeId], references: [id])
   evaluationPeriod         EvaluationPeriod?            @relation(fields: [evaluationPeriodId], references: [id])
   evaluator                User?                        @relation("Evaluator", fields: [evaluatorId], references: [id])
+  currentReviewer          User?                        @relation("EvaluationCurrentReviewer", fields: [currentReviewerId], references: [id])
 
   @@unique([evaluateeId, evaluationPeriodId])
   @@map("evaluations")

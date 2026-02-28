@@ -26,9 +26,12 @@ export class EvaluationService {
       throw new AppError('Evaluatee not found', 404);
     }
 
-    // Check if the evaluatee is a Junior and needs a Senior assigned
-    if (evaluatee.role === 'junior' && !evaluatee.seniorId && !evaluatee.managerId) {
-      throw new AppError('Cannot create evaluation: Junior must be assigned a Senior or Team Manager', 400);
+    // Any employee below manager-level must have at least a senior reviewer or a direct manager
+    if (!evaluatee.seniorId && !evaluatee.managerId) {
+      const isManagerLevel = ['team_manager', 'department_manager', 'admin', 'manager'].includes(evaluatee.role);
+      if (!isManagerLevel) {
+        throw new AppError('Cannot create evaluation: Employee must be assigned a Senior or Direct Manager', 400);
+      }
     }
 
     // Check if criteria defined for the user's job title
@@ -72,6 +75,7 @@ export class EvaluationService {
         status: 'draft',
         seniorId: evaluatee.seniorId,
         evaluatorId: evaluatee.managerId, // Initial manager/evaluator
+        currentReviewerId: evaluatee.managerId, // Track current reviewer for chain routing
       },
       include: {
         evaluatee: {
@@ -120,7 +124,10 @@ export class EvaluationService {
         auditLog: {
           include: { user: { select: { firstName: true, lastName: true, role: true } } },
           orderBy: { createdAt: 'desc' }
-        }
+        },
+        currentReviewer: {
+          select: { id: true, firstName: true, lastName: true, managerId: true },
+        },
       },
     });
 
@@ -147,13 +154,15 @@ export class EvaluationService {
         isTeamLead = !!team;
       }
 
-      // For department manager, check if the evaluatee's department manager matches
-      const departmentIdent = await prisma.department.findFirst({
-        where: { id: evaluation.evaluatee.departmentId ?? undefined, managerId: currentUser.userId }
-      });
-      isDeptManager = !!departmentIdent;
+      // For department manager, check via direct departmentId OR via team → team's department
+      isDeptManager = await this.isDepartmentManagerOf(
+        { departmentId: evaluation.evaluatee.departmentId, teamId: evaluation.evaluatee.teamId },
+        currentUser.userId
+      );
 
-      isAuthorized = isEvaluatee || isEvaluator || isSenior || isTeamManager || isTeamLead || isDeptManager;
+      const isCurrentReviewer = evaluation.currentReviewerId === currentUser.userId;
+
+      isAuthorized = isEvaluatee || isEvaluator || isSenior || isTeamManager || isTeamLead || isDeptManager || isCurrentReviewer;
     }
 
     if (isAuthorized) {
@@ -171,7 +180,7 @@ export class EvaluationService {
         if (bestStage) {
           const stageScores = evaluation.scores.filter(s => s.stage === bestStage);
           if (stageScores.length > 0) {
-            const total = stageScores.reduce((sum, s) => sum + s.score, 0);
+            const total = stageScores.reduce((sum, s) => sum + Number(s.score), 0);
             const avg = total / stageScores.length;
             const rating = this.getPerformanceRating(avg);
 
@@ -221,7 +230,11 @@ export class EvaluationService {
         { evaluatee: { managerId: currentUser.userId } },
         { evaluatee: { seniorId: currentUser.userId } },
         { evaluatee: { team: { managerId: currentUser.userId } } },
-        { evaluatee: { department: { managerId: currentUser.userId } } }
+        { evaluatee: { department: { managerId: currentUser.userId } } },
+        // Also include evaluations of members whose team belongs to a department managed by this user
+        { evaluatee: { team: { department: { managerId: currentUser.userId } } } },
+        // New: direct reviewer lookup for chain-based routing
+        { currentReviewerId: currentUser.userId },
       ];
     } else {
       // Juniors see only their own
@@ -363,18 +376,28 @@ export class EvaluationService {
         isTeamManager = !!team;
       }
 
-      let isDeptManager = false;
-      if (evaluation.evaluatee.departmentId) {
-        const dept = await prisma.department.findFirst({
-          where: { id: evaluation.evaluatee.departmentId, managerId: currentUser.userId }
-        });
-        isDeptManager = !!dept;
+      const isDeptManager = await this.isDepartmentManagerOf(
+        { departmentId: evaluation.evaluatee.departmentId, teamId: evaluation.evaluatee.teamId },
+        currentUser.userId
+      );
+
+      const hasManagerRole = ['team_manager', 'admin'].includes(currentUser.role);
+      const isCurrentReviewer = evaluation.currentReviewerId === currentUser.userId;
+
+      if (currentUser.role !== 'admin' && (!hasManagerRole || (!isDirectManager && !isTeamManager && !isDeptManager && !isCurrentReviewer))) {
+        throw new AppError('Only the authorized Team Manager can save manager-level scores', 403);
       }
 
-      const hasManagerRole = ['team_manager', 'department_manager', 'admin'].includes(currentUser.role);
-
-      if (currentUser.role !== 'admin' && (!hasManagerRole || (!isDirectManager && !isTeamManager && !isDeptManager))) {
-        throw new AppError('Only the authorized Team Manager can save manager-level scores', 403);
+      // Enforce stage ordering: manager can only score after the appropriate prior stage
+      if (currentUser.role !== 'admin') {
+        const hasSenior = !!evaluation.evaluatee.seniorId;
+        const blockedStatuses = ['draft', 'revision_requested', ...(hasSenior ? ['self_submitted'] : [])];
+        if (blockedStatuses.includes(evaluation.status)) {
+          throw new AppError(
+            `Manager scores can only be saved after ${hasSenior ? 'senior' : 'self'} submission`,
+            400
+          );
+        }
       }
     }
 
@@ -425,7 +448,7 @@ export class EvaluationService {
     });
 
     if (scores.length > 0) {
-      const totalScore = scores.reduce((sum, s) => sum + s.score, 0);
+      const totalScore = scores.reduce((sum, s) => sum + Number(s.score), 0);
       const overallScore = totalScore / scores.length;
       const performanceRating = this.getPerformanceRating(overallScore);
 
@@ -469,16 +492,40 @@ export class EvaluationService {
     // Update overall score before submitting
     await this.updateOverallStatus(evaluationId, 'self');
 
+    const hasSenior = !!evaluation.evaluatee.seniorId;
+    const nextReviewerId = evaluation.evaluatee.managerId ?? evaluation.currentReviewerId;
+    let newStatus: EvaluationStatus = 'self_submitted';
+
+    // If no senior and direct manager is a dept manager, skip scoring stage entirely
+    if (!hasSenior && nextReviewerId) {
+      const nextUser = await prisma.user.findUnique({
+        where: { id: nextReviewerId },
+        select: { role: true },
+      });
+      if (nextUser?.role === 'department_manager') {
+        newStatus = 'dept_approved';
+      }
+    }
+
     const updated = await prisma.evaluation.update({
       where: { id: evaluationId },
       data: {
-        status: 'self_submitted',
+        status: newStatus,
         selfComments: comments,
         submittedAt: new Date(),
+        currentReviewerId: nextReviewerId,
       },
     });
 
-    await this.createAuditLog(evaluationId, currentUser.userId, 'self_submitted', null, 'Self-evaluation submitted');
+    let nextStepNote: string;
+    if (newStatus === 'dept_approved') {
+      nextStepNote = 'Awaiting Department Manager approval (direct manager is dept manager – scoring stage skipped)';
+    } else if (hasSenior) {
+      nextStepNote = 'Awaiting senior review';
+    } else {
+      nextStepNote = 'Awaiting direct manager review (senior stage skipped – no senior assigned)';
+    }
+    await this.createAuditLog(evaluationId, currentUser.userId, newStatus, null, `Self-evaluation submitted – ${nextStepNote}`);
 
     return updated;
   }
@@ -495,6 +542,9 @@ export class EvaluationService {
       const hasSeniorRole = ['senior', 'team_manager', 'department_manager'].includes(currentUser.role);
       if (!isSenior || !hasSeniorRole) {
         throw new AppError('Only the assigned Senior (or someone with Senior role) can submit this stage', 403);
+      }
+      if (evaluation.status !== 'self_submitted') {
+        throw new AppError('Senior evaluation can only be submitted after self-evaluation is submitted', 400);
       }
     }
 
@@ -520,16 +570,31 @@ export class EvaluationService {
     // Update overall score before submitting
     await this.updateOverallStatus(evaluationId, 'senior');
 
+    // If the next reviewer (currentReviewerId = evaluatee's manager) is a dept manager, skip scoring stage
+    let seniorStatus: EvaluationStatus = 'senior_submitted';
+    if (evaluation.currentReviewerId) {
+      const nextUser = await prisma.user.findUnique({
+        where: { id: evaluation.currentReviewerId },
+        select: { role: true },
+      });
+      if (nextUser?.role === 'department_manager') {
+        seniorStatus = 'dept_approved';
+      }
+    }
+
     const updated = await prisma.evaluation.update({
       where: { id: evaluationId },
       data: {
-        status: 'senior_submitted',
+        status: seniorStatus,
         seniorComments: comments,
         seniorFeedback: feedback,
       },
     });
 
-    await this.createAuditLog(evaluationId, currentUser.userId, 'senior_submitted', null, 'Senior evaluation submitted');
+    const seniorAuditNote = seniorStatus === 'dept_approved'
+      ? 'Senior evaluation submitted — forwarded to Department Manager for approval'
+      : 'Senior evaluation submitted';
+    await this.createAuditLog(evaluationId, currentUser.userId, seniorStatus, null, seniorAuditNote);
 
     return updated;
   }
@@ -543,28 +608,41 @@ export class EvaluationService {
     if (!evaluation) throw new AppError('Evaluation not found', 404);
 
     if (currentUser.role !== 'admin') {
-      const isDirectManager = evaluation.evaluatee.managerId === currentUser.userId;
+      // New flow: check currentReviewerId for dynamic chain routing
+      let isAuthorized = !!evaluation.currentReviewerId && evaluation.currentReviewerId === currentUser.userId;
 
-      let isTeamManager = false;
-      if (evaluation.evaluatee.teamId) {
-        const team = await prisma.team.findFirst({
-          where: { id: evaluation.evaluatee.teamId, managerId: currentUser.userId }
-        });
-        isTeamManager = !!team;
+      // Legacy fallback for old evaluations without currentReviewerId
+      if (!isAuthorized && !evaluation.currentReviewerId) {
+        const isDirectManager = evaluation.evaluatee.managerId === currentUser.userId;
+
+        let isTeamManager = false;
+        if (evaluation.evaluatee.teamId) {
+          const team = await prisma.team.findFirst({
+            where: { id: evaluation.evaluatee.teamId, managerId: currentUser.userId }
+          });
+          isTeamManager = !!team;
+        }
+
+        const isDeptManagerForSubmit = await this.isDepartmentManagerOf(
+          { departmentId: evaluation.evaluatee.departmentId, teamId: evaluation.evaluatee.teamId },
+          currentUser.userId
+        );
+
+        const hasManagerRole = ['team_manager', 'department_manager'].includes(currentUser.role);
+        isAuthorized = hasManagerRole && (isDirectManager || isTeamManager || isDeptManagerForSubmit);
       }
 
-      let isDeptManager = false;
-      if (evaluation.evaluatee.departmentId) {
-        const dept = await prisma.department.findFirst({
-          where: { id: evaluation.evaluatee.departmentId, managerId: currentUser.userId }
-        });
-        isDeptManager = !!dept;
+      if (!isAuthorized) {
+        throw new AppError('Only the current assigned reviewer can submit this stage', 403);
       }
 
-      const hasManagerRole = ['team_manager', 'department_manager'].includes(currentUser.role);
-
-      if (!hasManagerRole || (!isDirectManager && !isTeamManager && !isDeptManager)) {
-        throw new AppError('Only an authorized Team Manager can submit this stage', 403);
+      // Enforce valid prior status (self_submitted / senior_submitted for first review, manager_submitted for chain traversal)
+      const validPriorStatuses = ['self_submitted', 'senior_submitted', 'manager_submitted'];
+      if (!validPriorStatuses.includes(evaluation.status)) {
+        throw new AppError(
+          'Manager review can only be submitted after the employee has completed their self-evaluation',
+          400
+        );
       }
     }
 
@@ -588,23 +666,55 @@ export class EvaluationService {
     }
 
     // Calculate final score using the helper
-    const totalScore = evaluation.scores.reduce((sum, s) => sum + s.score, 0);
+    const totalScore = evaluation.scores.reduce((sum, s) => sum + Number(s.score), 0);
     const overallScore = totalScore / evaluation.scores.length;
     const performanceRating = this.getPerformanceRating(overallScore);
+
+    // Chain traversal: check if current reviewer has a manager above them
+    const currentReviewerUser = await prisma.user.findUnique({
+      where: { id: currentUser.userId },
+      select: { managerId: true },
+    });
+    const nextReviewerId = currentReviewerUser?.managerId ?? null;
+    const isFinalApprover = !nextReviewerId;
+    let newStatus: EvaluationStatus;
+
+    if (isFinalApprover) {
+      newStatus = 'final_approved';
+    } else {
+      // Check if next reviewer is a dept manager → route to dept_approved (approve-only stage)
+      const nextUser = await prisma.user.findUnique({
+        where: { id: nextReviewerId! },
+        select: { role: true },
+      });
+      newStatus = nextUser?.role === 'department_manager' ? 'dept_approved' : 'manager_submitted';
+    }
 
     const updated = await prisma.evaluation.update({
       where: { id: evaluationId },
       data: {
-        status: 'manager_submitted',
+        status: newStatus,
         managerComments: comments,
         managerFeedback: feedback,
         overallScore,
         performanceRating,
         reviewedAt: new Date(),
+        currentReviewerId: isFinalApprover ? null : nextReviewerId,
       },
     });
 
-    await this.createAuditLog(evaluationId, currentUser.userId, 'manager_submitted', null, 'Team Manager review submitted');
+    const hasSeniorForAudit = !!evaluation.evaluatee.seniorId;
+    let auditNote: string;
+    if (isFinalApprover) {
+      auditNote = 'Final approval — top of reporting chain reached';
+    } else if (newStatus === 'dept_approved') {
+      auditNote = 'Team Manager review submitted — forwarded to Department Manager for approval';
+    } else {
+      auditNote = hasSeniorForAudit
+        ? 'Team Manager review submitted — forwarded to next reviewer in chain'
+        : 'Team Manager review submitted (Senior stage skipped) — forwarded to next reviewer in chain';
+    }
+    await this.createAuditLog(evaluationId, currentUser.userId, newStatus, null, auditNote);
 
     return updated;
   }
@@ -617,24 +727,32 @@ export class EvaluationService {
 
     if (!evaluation) throw new AppError('Evaluation not found', 404);
 
-    // Check if user is Dept Manager
-    const dept = await prisma.department.findFirst({
-      where: { id: evaluation.evaluatee.departmentId ?? undefined, managerId: currentUser.userId }
-    });
+    // Auth: check currentReviewerId first (new flow), then fall back to isDepartmentManagerOf (legacy)
+    const isCurrentReviewer = evaluation.currentReviewerId === currentUser.userId;
+    const isActingDeptManager = isCurrentReviewer || await this.isDepartmentManagerOf(
+      { departmentId: evaluation.evaluatee.departmentId, teamId: evaluation.evaluatee.teamId },
+      currentUser.userId
+    );
 
-    if (!dept && currentUser.role !== 'admin') {
+    if (!isActingDeptManager && currentUser.role !== 'admin') {
       throw new AppError('Only the Department Manager can approve this evaluation', 403);
+    }
+
+    // Accept both 'dept_approved' (new flow) and 'manager_submitted' (backward compat for old evaluations)
+    if (!['dept_approved', 'manager_submitted'].includes(evaluation.status) && currentUser.role !== 'admin') {
+      throw new AppError('Department approval can only be done after the manager has submitted their review', 400);
     }
 
     const updated = await prisma.evaluation.update({
       where: { id: evaluationId },
       data: {
-        status: 'dept_approved',
+        status: 'final_approved',
         deptApprovalNotes: notes,
+        reviewedAt: new Date(),
       },
     });
 
-    await this.createAuditLog(evaluationId, currentUser.userId, 'dept_approved', null, 'Department Manager approved');
+    await this.createAuditLog(evaluationId, currentUser.userId, 'final_approved', null, 'Department Manager final approval');
 
     return updated;
   }
@@ -660,29 +778,47 @@ export class EvaluationService {
         isTeamManager = !!team;
       }
 
-      let isDeptManager = false;
-      if (evaluation.evaluatee.departmentId) {
-        const dept = await prisma.department.findFirst({
-          where: { id: evaluation.evaluatee.departmentId, managerId: currentUser.userId }
-        });
-        isDeptManager = !!dept;
-      }
+      const isDeptManager = await this.isDepartmentManagerOf(
+        { departmentId: evaluation.evaluatee.departmentId, teamId: evaluation.evaluatee.teamId },
+        currentUser.userId
+      );
 
-      isSuperior = isDirectSuperior || isTeamManager || isDeptManager;
+      const isCurrentReviewer = evaluation.currentReviewerId === currentUser.userId;
+
+      isSuperior = isDirectSuperior || isTeamManager || isDeptManager || isCurrentReviewer;
     }
 
     if (!isSuperior) {
       throw new AppError('You are not authorized to request revision', 403);
     }
 
+    let revisionStatus: EvaluationStatus = 'revision_requested';
+    let newCurrentReviewerId: string | null | undefined = undefined; // undefined = don't update
+
+    if (evaluation.status === 'dept_approved') {
+      // Check if evaluatorId (the direct manager who submitted) is itself a dept manager
+      const evaluatorUser = evaluation.evaluatorId ? await prisma.user.findUnique({
+        where: { id: evaluation.evaluatorId },
+        select: { role: true },
+      }) : null;
+
+      if (evaluatorUser?.role !== 'department_manager') {
+        // Evaluator is a regular scoring manager → revert to manager_submitted stage
+        revisionStatus = 'manager_submitted';
+        newCurrentReviewerId = evaluation.evaluatorId;
+      }
+      // else: evaluator IS a dept_manager (Case C: dept is direct manager) → revision_requested (back to employee)
+    }
+
     const updated = await prisma.evaluation.update({
       where: { id: evaluationId },
       data: {
-        status: 'revision_requested',
+        status: revisionStatus,
+        ...(newCurrentReviewerId !== undefined ? { currentReviewerId: newCurrentReviewerId } : {}),
       },
     });
 
-    await this.createAuditLog(evaluationId, currentUser.userId, 'revision_requested', null, notes);
+    await this.createAuditLog(evaluationId, currentUser.userId, revisionStatus, null, notes);
 
     return updated;
   }
@@ -802,7 +938,7 @@ export class EvaluationService {
     const evaluation = await prisma.evaluation.findUnique({
       where: { id: evaluationId },
       include: {
-        evaluatee: { select: { id: true, managerId: true, seniorId: true, departmentId: true } }
+        evaluatee: { select: { id: true, managerId: true, seniorId: true, departmentId: true, teamId: true } }
       }
     });
 
@@ -818,11 +954,11 @@ export class EvaluationService {
       const isManagerOfEvaluatee = evaluation.evaluatee?.managerId === currentUser.userId;
       const isSeniorOfEvaluatee = evaluation.evaluatee?.seniorId === currentUser.userId;
 
-      // For department manager, check if the evaluatee is in their department
-      const departmentIdent = await prisma.department.findFirst({
-        where: { id: evaluation.evaluatee.departmentId ?? undefined, managerId: currentUser.userId }
-      });
-      const isDeptManager = !!departmentIdent;
+      // For department manager, check via direct departmentId OR via team → team's department
+      const isDeptManager = await this.isDepartmentManagerOf(
+        { departmentId: evaluation.evaluatee.departmentId, teamId: evaluation.evaluatee.teamId },
+        currentUser.userId
+      );
 
       isAuthorized = isEvaluatee || isManagerOfEvaluatee || isSeniorOfEvaluatee || isDeptManager;
     }
@@ -884,11 +1020,163 @@ export class EvaluationService {
     return { message: `${ids.length} evaluations permanently deleted` };
   }
 
+  static async createCalculated(evaluationIds: string[], currentUser: { userId: string; role: string }) {
+    if (!evaluationIds || evaluationIds.length < 2) {
+      throw new AppError('Select at least 2 evaluations to create a calculated evaluation', 400);
+    }
+
+    const evaluations = await prisma.evaluation.findMany({
+      where: { id: { in: evaluationIds }, isDeleted: false },
+      include: {
+        evaluatee: { select: { id: true, firstName: true, lastName: true } },
+        scores: { include: { criteria: true } },
+        evaluationPeriod: { select: { name: true, startDate: true } },
+      },
+    });
+
+    if (evaluations.length !== evaluationIds.length) {
+      throw new AppError('One or more evaluations not found', 404);
+    }
+
+    // Validate all belong to the same employee
+    const uniqueEvaluatees = new Set(evaluations.map(e => e.evaluateeId));
+    if (uniqueEvaluatees.size > 1) {
+      throw new AppError('All selected evaluations must belong to the same employee', 400);
+    }
+
+    // Reject already-calculated evaluations as sources
+    if (evaluations.some(e => e.isCalculated)) {
+      throw new AppError('Cannot include already-calculated evaluations as sources', 400);
+    }
+
+    const evaluateeId = evaluations[0].evaluateeId;
+
+    // ── Step 1: Build per-criteria averages ──────────────────────────────────
+    // For each source evaluation, pick the best-available stage score per
+    // criteria (manager → senior → self), then average across all evals.
+    // Scores are keyed by criteriaId so mapping is always by ID, never by index.
+    const criteriaScoresMap = new Map<string, number[]>();
+    for (const eval_ of evaluations) {
+      const byStage: Record<string, Record<string, number>> = {};
+      for (const s of eval_.scores) {
+        if (!byStage[s.criteriaId]) byStage[s.criteriaId] = {};
+        byStage[s.criteriaId][s.stage] = Number(s.score);
+      }
+      for (const [criteriaId, stageScores] of Object.entries(byStage)) {
+        const best = stageScores['manager'] ?? stageScores['senior'] ?? stageScores['self'];
+        if (best !== undefined) {
+          const arr = criteriaScoresMap.get(criteriaId) || [];
+          arr.push(best);
+          criteriaScoresMap.set(criteriaId, arr);
+        }
+      }
+    }
+
+    if (criteriaScoresMap.size === 0) {
+      throw new AppError('None of the selected evaluations have scores yet', 400);
+    }
+
+    // ── Step 2: Compute per-criteria averages (full decimal precision) ────────
+    const criteriaAverages = new Map<string, number>();
+    for (const [criteriaId, scores] of criteriaScoresMap) {
+      const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+      criteriaAverages.set(criteriaId, parseFloat(avg.toFixed(2)));
+    }
+
+    // ── Step 3: Overall score = mean of all per-criteria averages ────────────
+    // This mirrors how regular evaluations compute overallScore
+    // (mean of all score rows), keeping the metrics consistent.
+    const allCriteriaAvgs = Array.from(criteriaAverages.values());
+    const overallAvg = allCriteriaAvgs.reduce((a, b) => a + b, 0) / allCriteriaAvgs.length;
+    const overallScore = parseFloat(overallAvg.toFixed(2));
+    const performanceRating = this.getPerformanceRating(overallScore);
+
+    // ── Step 4: Build combined period name from source evaluations ───────────
+    const sourcePeriods = evaluations
+      .filter(e => e.evaluationPeriod)
+      .map(e => e.evaluationPeriod!)
+      .sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime());
+    const uniquePeriodNames = [...new Set(sourcePeriods.map(p => p.name))];
+    const calculatedPeriodName = uniquePeriodNames.length > 0 ? uniquePeriodNames.join(' - ') : null;
+
+    // ── Step 5: Persist evaluation + per-criteria score rows ─────────────────
+    const calculated = await prisma.evaluation.create({
+      data: {
+        evaluateeId,
+        isCalculated: true,
+        sourceEvaluationIds: evaluationIds,
+        overallScore,
+        performanceRating,
+        status: 'calculated',
+        calculatedPeriodName,
+      },
+      include: {
+        evaluatee: { select: { id: true, firstName: true, lastName: true, role: true, jobTitleId: true, levelId: true } },
+      },
+    });
+
+    await prisma.evaluationScore.createMany({
+      data: Array.from(criteriaAverages.entries()).map(([criteriaId, avg]) => ({
+        evaluationId: calculated.id,
+        criteriaId,
+        stage: 'calculated' as const,
+        score: avg,   // Decimal(4,2) — preserves e.g. 3.50
+      })),
+    });
+
+    await this.createAuditLog(
+      calculated.id,
+      currentUser.userId,
+      'calculated',
+      null,
+      `Calculated from ${evaluationIds.length} evaluations — ${criteriaAverages.size} criteria averaged, overall=${overallScore}`
+    );
+
+    return calculated;
+  }
+
   private static getPerformanceRating(score: number): string {
     if (score >= 4.5) return 'Outstanding';
     if (score >= 3.5) return 'Exceeds Expectations';
     if (score >= 2.5) return 'Meets Expectations';
     if (score >= 1.5) return 'Below Expectations';
     return 'Needs Significant Improvement';
+  }
+
+  /**
+   * Checks whether `managerId` is the department manager of the given evaluatee.
+   * Resolves via two paths:
+   *   1. Evaluatee's direct departmentId → Department.managerId
+   *   2. Evaluatee's teamId → Team.departmentId → Department.managerId
+   * This handles the common case where an employee's departmentId is not set directly
+   * on the user record but is implied by their team membership.
+   */
+  static async isDepartmentManagerOf(
+    evaluatee: { departmentId: string | null; teamId: string | null },
+    managerId: string
+  ): Promise<boolean> {
+    // Path 1: direct departmentId on the user
+    if (evaluatee.departmentId) {
+      const dept = await prisma.department.findFirst({
+        where: { id: evaluatee.departmentId, managerId },
+      });
+      if (dept) return true;
+    }
+
+    // Path 2: via team → team's departmentId
+    if (evaluatee.teamId) {
+      const team = await prisma.team.findFirst({
+        where: { id: evaluatee.teamId },
+        select: { departmentId: true },
+      });
+      if (team?.departmentId) {
+        const dept = await prisma.department.findFirst({
+          where: { id: team.departmentId, managerId },
+        });
+        if (dept) return true;
+      }
+    }
+
+    return false;
   }
 }

@@ -89,6 +89,17 @@ router.post('/', async (req: AuthRequest, res: Response, next: NextFunction) => 
   }
 });
 
+// Create calculated evaluation from multiple source evaluations
+router.post('/calculated', hasPermission('evaluations:create_calculated'), async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { evaluationIds } = req.body;
+    const evaluation = await EvaluationService.createCalculated(evaluationIds, req.user!);
+    res.status(201).json(evaluation);
+  } catch (error) {
+    next(error);
+  }
+});
+
 // List evaluations
 /**
  * @swagger

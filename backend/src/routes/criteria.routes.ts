@@ -115,7 +115,6 @@ router.post(
       const {
         name,
         description,
-        expectations,
         behavioralIndicators,
         scoringGuide,
         weight,
@@ -124,10 +123,23 @@ router.post(
       } = req.body;
 
       // Validate required fields
-      if (!name || !description || !expectations || !behavioralIndicators || !scoringGuide) {
+      if (!name || !description || !behavioralIndicators || !scoringGuide) {
         return res.status(400).json({
-          error: 'name, description, expectations, behavioralIndicators, and scoringGuide are required'
+          error: 'name, description, behavioralIndicators, and scoringGuide are required'
         });
+      }
+
+      // Check uniqueness per job title
+      if (jobTitleIds && Array.isArray(jobTitleIds) && jobTitleIds.length > 0) {
+        const duplicate = await prisma.evaluationCriteria.findFirst({
+          where: {
+            name: { equals: name, mode: 'insensitive' },
+            jobTitles: { some: { jobTitleId: { in: jobTitleIds } } },
+          },
+        });
+        if (duplicate) {
+          return res.status(409).json({ error: 'A criterion with this name already exists for one of the selected job titles' });
+        }
       }
 
       // Create criterion with optional job title assignments
@@ -135,7 +147,6 @@ router.post(
         data: {
           name,
           description,
-          expectations,
           behavioralIndicators,
           scoringGuide,
           weight: weight || 1.0,
@@ -159,9 +170,6 @@ router.post(
 
       res.status(201).json(criterion);
     } catch (error: any) {
-      if (error.code === 'P2002') {
-        return res.status(409).json({ error: 'A criterion with this name already exists' });
-      }
       next(error);
     }
   }
@@ -176,7 +184,6 @@ router.put(
       const {
         name,
         description,
-        expectations,
         behavioralIndicators,
         scoringGuide,
         weight,
@@ -185,11 +192,24 @@ router.put(
         jobTitleIds, // Optional: Array of job title IDs to assign this criterion to
       } = req.body;
 
+      // Check uniqueness per job title on update
+      if (name !== undefined && jobTitleIds && Array.isArray(jobTitleIds) && jobTitleIds.length > 0) {
+        const duplicate = await prisma.evaluationCriteria.findFirst({
+          where: {
+            name: { equals: name, mode: 'insensitive' },
+            id: { not: req.params.id as string },
+            jobTitles: { some: { jobTitleId: { in: jobTitleIds } } },
+          },
+        });
+        if (duplicate) {
+          return res.status(409).json({ error: 'A criterion with this name already exists for one of the selected job titles' });
+        }
+      }
+
       // Build update data
       const updateData: Prisma.EvaluationCriteriaUpdateInput = {};
       if (name !== undefined) updateData.name = name;
       if (description !== undefined) updateData.description = description;
-      if (expectations !== undefined) updateData.expectations = expectations;
       if (behavioralIndicators !== undefined) updateData.behavioralIndicators = behavioralIndicators;
       if (scoringGuide !== undefined) updateData.scoringGuide = scoringGuide;
       if (weight !== undefined) updateData.weight = weight;
@@ -224,9 +244,6 @@ router.put(
     } catch (error: any) {
       if (error.code === 'P2025') {
         return res.status(404).json({ error: 'Criterion not found' });
-      }
-      if (error.code === 'P2002') {
-        return res.status(409).json({ error: 'A criterion with this name already exists' });
       }
       next(error);
     }

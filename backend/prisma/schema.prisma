@@ -214,9 +214,9 @@ model RefreshToken {
 
 model EvaluationCriteria {
   id                   String             @id @default(uuid())
-  name                 String             @unique
+  name                 String
   description          String
-  expectations         String
+  expectations         String?
   behavioralIndicators String             @map("behavioral_indicators")
   scoringGuide         Json               @map("scoring_guide")
   weight               Decimal            @default(1.00) @db.Decimal(3, 2)

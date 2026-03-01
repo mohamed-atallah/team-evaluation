@@ -109,11 +109,14 @@ Users carry two separate authorization concepts that coexist:
 ### Evaluation Lifecycle
 Multi-stage status flow enforced in `EvaluationService`:
 ```
-draft → self_submitted → senior_submitted → manager_submitted → dept_approved → final_approved
-                                                              ↘ revision_requested → (back to earlier stage)
-                                                                                    archived
+draft → self_submitted → [senior_submitted →] manager_submitted → final_approved
+                                                               ↘ revision_requested → (back to earlier stage)
+                                                                                     archived
 ```
-There is also a parallel `calculated` status for multi-evaluation aggregates (see below).
+- Senior stage is **optional**: if `evaluatee.seniorId` is null, flow goes `self_submitted → manager_submitted` directly.
+- `manager_submitted` uses **chain traversal** via `Evaluation.currentReviewerId`: `submitManager()` looks up the current reviewer's own `managerId`. If null → `final_approved`; otherwise stays `manager_submitted` with `currentReviewerId` set to the next manager in chain.
+- `currentReviewerId` is set to `evaluatee.managerId` at evaluation creation; old evaluations without it fall back to legacy `dept_approved` flow (`approveDept()` kept for backward compatibility).
+- There is also a parallel `calculated` status for multi-evaluation aggregates (see below).
 
 `EvaluationScore` captures scores per `(evaluationId, criteriaId, stage)` where `stage ∈ {self, senior, manager, calculated}`, enforced by a composite unique constraint. Evaluations are unique per `(evaluateeId, evaluationPeriodId)`.
 
@@ -138,12 +141,13 @@ Source evaluations with `isCalculated=true` cannot be used as inputs. `Evaluatio
   - `roleId` → custom `Role` (many-to-many `RolePermission`) — controls feature access
   - `jobTitleId` → `JobTitle` — determines which `EvaluationCriteria` applies
   - `User.role` (enum) — legacy coarse-grained field used directly in `authorize()` guards
-- `EvaluationCriteria` ↔ `JobTitle` via `JobTitleCriteria` junction (with optional per-job `weight` and `displayOrder`)
-- `Level` is scoped to a `Role` (unique name per role) and can be assigned to users
+- **User level duality**: `User.level` is a legacy `EmployeeLevel` enum (junior/mid_level/senior); `User.levelId` points to a dynamic `Level` entity scoped to a `Role` (unique name per role). The dynamic level is preferred; the enum is kept for backward compat.
+- `EvaluationCriteria` ↔ `JobTitle` via `JobTitleCriteria` junction (with optional per-job `weight` and `displayOrder`). `EvaluationCriteria.scoringGuide` is a JSON object mapping score values to descriptive text.
 - `RefreshToken` model stores token string + `expiresAt` in the DB; login/register create them, logout deletes them
 - `AppSettings` — singleton model (id always `"singleton"`) for app-wide config (appName, logoUrl); auto-created with defaults on first read
 - `EvaluationAudit` — append-only audit trail for evaluation status transitions
-- `Evaluation.evaluationPeriodId` is nullable — calculated evaluations (via `POST /calculated`) have no period
+- `PermissionAuditLog` — append-only audit trail for role/permission assignment changes (separate from `EvaluationAudit`)
+- `Evaluation.evaluationPeriodId` is nullable — calculated evaluations (via `POST /calculated`) have no period; `Evaluation.calculatedPeriodName` stores the human-readable period label for display
 - `Evaluation.isCalculated` / `sourceEvaluationIds` — mark and trace multi-source aggregate evaluations
 - `EvaluationScore.score` is `Decimal(4,2)` — Prisma returns a `Decimal` object; wrap in `Number()` before arithmetic
 
@@ -158,6 +162,8 @@ Source evaluations with `isCalculated=true` cannot be used as inputs. `Evaluatio
 - `lib/utils.ts` exports: `cn()` (clsx + tailwind-merge), `getScoreColor()`, `getPerformanceColor()`, `getStatusColor()`, `getLevelLabel()`, `formatDate()`
 - No runtime request validation library (Zod, Yup, etc.) — backend uses basic truthiness checks; database constraints enforce uniqueness
 - `useAppSettings` hook fetches `/api/settings` (public endpoint, no auth required) on mount and provides app name/logo throughout the UI
+- PDF export: `@react-pdf/renderer` via `<EvaluationPDF>` and `<JobTitlePreviewPDF>` components, rendered client-side with `<PDFDownloadLink>`
+- Excel export: `xlsx` library used directly in page components (e.g., evaluation detail page)
 
 ### Testing
 There is no test setup — no jest.config, vitest.config, or `.test`/`.spec` files exist in the src directories.
@@ -186,6 +192,7 @@ There is no test setup — no jest.config, vitest.config, or `.test`/`.spec` fil
 
 **Frontend (.env.local):**
 - `NEXT_PUBLIC_API_URL` - Backend API base URL (default: `http://localhost:3001/api`)
+- `BACKEND_INTERNAL_URL` - Docker-only: internal service URL used for server-side requests within the Docker network (e.g., `http://backend:3001/api`)
 
 ## Test Credentials (after seeding)
 ```
